@@ -2,22 +2,35 @@
 #include <libraries/Fft/Fft.h>
 #include <vector>
 
-float carrier_freq = 40000;
-float sample_rate = 44100;
-const unsigned int block_size = 16; //This should be changed from the IDE
+float carrierFreq = 40000;
+float sampleRate = 44100;
+const unsigned int blockSize = 16; //This should be changed from the IDE
 
-std::vector<float> *ref_mic = NULL;
-std::vector<float> *error_mic = NULL;
+int audio_frames_per_analog_frame;
 
+/** Define Microphone Channels **/
+const unsigned int refChannel = 0;
+const unsigned int errorChannel = 2;
+
+
+std::vector<float> *refMic = NULL;
+std::vector<float> *errorMic = NULL;
 
 bool setup(BelaContext *context, void *userData)
 {
-	
+	refMic = new std::vector<float>;
+	errorMic = new std::vector<float>;
 	return true;
 }
 
 void render(BelaContext *context, void *userData)
 {
+//Get samples for current audio block
+for (unsigned int n = 0; n < context->audioFrames; n++){
+	
+
+}
+
 
 }
 
