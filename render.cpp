@@ -3,7 +3,10 @@
 #include <libraries/Fft/Fft.h>
 #include <vector>
 
-/** @todo Make fxlms use fft_convolve **/
+/** @todo 
+ * -Make FxLMS use fft_convolve
+ * -Be smart about timing for secondary path training
+ * -Implement sacfolds	 **/
 
 const float carrierFreq = 40000;
 const float sampleRate = 44100;
