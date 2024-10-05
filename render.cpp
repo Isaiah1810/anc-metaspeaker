@@ -2,6 +2,8 @@
 #include <Bela.h>
 #include <libraries/Fft/Fft.h>
 #include <vector>
+#include <libraries/Convolver/Convolver.h>
+#include <cmath>
 
 /** @todo 
  * -Make FxLMS use fft_convolve
@@ -9,7 +11,11 @@
  * -Implement sacfolds	 **/
 
 const float carrierFreq = 40000;
+const float carrierAmp = 0.8;
+
 const float sampleRate = 44100;
+
+const float stepSize = 0.2;
 
 int gAudioFramesPerAnalogFrame;
 
@@ -44,7 +50,7 @@ bool doNoiseControl;
 
 bool setup(BelaContext *context, void *userData)
 {
-	gAudioFramesPerAnalogFrame = context->audioFrames / context->analogFrames
+	gAudioFramesPerAnalogFrame = context->audioFrames / context->analogFrames;
 
 	currSample = 0;
 
@@ -121,9 +127,41 @@ void applyFxLMS(const std::vector<float> &reference,
  * @param noise Vector where noise is writen to
  * @param currSample The current elapsed sample from boot
 */
-void generateNoise(std::vector<float> &noise, unsigned int currSample){
+void generateNoise(std::vector<float> &noise, unsigned int currSample);
+
+/**
+ * @brief Modulates audio to carrier frequency and removes negative baseband using hilber transform
+ * @param context Bela context
+ * @param antiNoise The audio to be processed
+ * @param output A vector to where the processed audio is written
+ * @param currSample The number of samples that have passed since the begining of the program
+ * 
+*/
+void processAntiNoise(BelaContext *context, std::vector<float> &antiNoise, std::vector<float> &output, unsigned int currSample){
+	// Modulate antiNoise by carrier 
+	for (size_t n = 0; n < context->audioFrames; n++){
+		float wave = sin(2 * M_PI * (n + currSample) * carrierFreq / context->audioSampleRate);
+		output[n] = antiNoise[n] * wave;
+	}
+	static Fft fft(context->audioFrames);
+	fft.setup(context->audioFrames);
+	fft.fft(output);
+	
+	// Remove Negative Basebands with Hilbert Transform (Set buffers to zero, copy only first half)
+	std::vector<float> reBuffer(context->audioFrames, 0.0f);
+	std::vector<float> imBuffer(context->audioFrames, 0.0f);
+	for (size_t n = 0; n < context->audioFrames / 2; n++) {
+		reBuffer[n] = fft.fdr(n);
+		imBuffer[n] = fft.fdi(n);
+	} 
+	
+	fft.ifft(&reBuffer, &imBuffer);
+	for (size_t n = 0; n < context->audioFrames; n++) {
+		output[n] = fft.td(n);
+	}
 
 }
+
 
 void render(BelaContext *context, void *userData)
 {
@@ -136,8 +174,8 @@ void render(BelaContext *context, void *userData)
 			//Read analog frames for both microphones
 			ref = analogRead(context, n/gAudioFramesPerAnalogFrame, refChannel);
 			error = analogRead(context, n/gAudioFramesPerAnalogFrame, errorChannel);
-			refBlock[i] = ref;
-			errorBlock[i] = error;
+			refBlock[n] = ref;
+			errorBlock[n] = error;
 		}
 	}
 
@@ -164,6 +202,7 @@ void render(BelaContext *context, void *userData)
 	// Process output for speaker (hilbert+modulate)
  
 	//
+	currSample = currSample + context->audioFrames;
 }
 
 void cleanup(BelaContext *context, void *userData)
