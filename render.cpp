@@ -11,7 +11,7 @@ const float sampleRate = 44100;
 int gAudioFramesPerAnalogFrame;
 
 // Number of samples that have passed
-unsigned int numSamples;
+unsigned int currSample;
 
 // Define Microphone Channels //
 const unsigned int refChannel = 0;
@@ -36,14 +36,14 @@ std::vector<float> primaryFilter;
 std::vector<float> secondaryFilter;
 
 /** Boolean representing whether to train primary path and run noise control.
- *	is false when secondary path estimator filter is being trained **/
+ *	is false when secondary path estimator filter is being trained */
 bool doNoiseControl;
 
 bool setup(BelaContext *context, void *userData)
 {
 	gAudioFramesPerAnalogFrame = context->audioFrames / context->analogFrames
 
-	numSamples = 0;
+	currSample = 0;
 
 	//Initialize microphone input vectors to 0
 	refBlock.resize(context->audioFrames, 0.0f);
@@ -65,7 +65,7 @@ bool setup(BelaContext *context, void *userData)
 }
 
 /** 
- * @brief Updates a filter using FxLMS, and applies the filter to reference signal
+ * @brief Updates a filter using FxLMS, and applies the filter to reference signal. 
  * @param reference the audio block from the reference signal
  * @param error the audio block from the error mic
  * @param filter the filter coefficients
@@ -113,6 +113,15 @@ void applyFxLMS(const std::vector<float> &reference,
 	
 }
 
+/** 
+ * @brief Generates training noise for use in secondary path estimation learning
+ * @param noise Vector where noise is writen to
+ * @param currSample The current elapsed sample from boot
+*/
+void generateNoise(std::vector<float> &noise, unsigned int currSample){
+
+}
+
 void render(BelaContext *context, void *userData)
 {
 	float ref;
@@ -131,13 +140,27 @@ void render(BelaContext *context, void *userData)
 
 	// Train secondary path filter if not converged
 	if (!doNoiseControl){
-
+		generateNoise(&trainingNoiseBlock, currSample);
+		applyFxLMS(&trainingNoiseBlock, &errorBlock, &secondaryFilter, stepSize, 
+				   &antiNoiseBlock);
 	}
-	// Perform Active Noise Control
+	// Perform Active Noise Control and FxLMS on primary path
 	else{
+		// Convolve reference signal with primary path 
+		
+		// Invert primary path signal 
+
+		// Convolve reference with secondary path
+
+		// Compute error signal for FxLMS as errorBlock - (ref conv secondary)
+
+		// Perform FxLMS to update weights (don't use output from this)
 
 	}
 
+	// Process output for speaker (hilbert+modulate)
+ 
+	//
 }
 
 void cleanup(BelaContext *context, void *userData)
