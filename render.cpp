@@ -122,8 +122,8 @@ void applyFxLMS(const std::vector<float> &reference,
 			}
 		}
 		// Store filter output
-		if (output != NULL)
-			*output[n] = filterOutput;
+		if (output != nullptr)
+			(*output)[n] = filterOutput;
 	}
 	
 }
@@ -170,7 +170,7 @@ void processAntiNoise(BelaContext *context, std::vector<float> &antiNoise, std::
 	for (size_t n = 0; n < context->audioFrames; n++) {
 		output[n] = fft.td(n);
 	}
-	
+
 	// Modulate antiNoise by carrier 
 	for (size_t n = 0; n < context->audioFrames; n++){
 		float wave = sin(2 * M_PI * (n + currSample) * carrierFreq / context->audioSampleRate);
@@ -213,11 +213,11 @@ void render(BelaContext *context, void *userData)
 	if (!doNoiseControl){
 		prevSecondaryFilter = secondaryFilter;
 		generateNoise(&trainingNoiseBlock, currSample);
-		applyFxLMS(&trainingNoiseBlock, &errorBlock, &secondaryFilter, stepSize, 
+		applyFxLMS(trainingNoiseBlock, errorBlock, secondaryFilter, stepSize, 
 				   &antiNoiseBlock);
 		
 		/** TODO: CHECK CONVERGANCE CONDITION */
-		doNoiseControl = checkConvergence(&secondaryFilter, &prevSecondaryFilter, threshold);
+		doNoiseControl = checkConvergence(secondaryFilter, prevSecondaryFilter, threshold);
 	}
 	// Perform Active Noise Control and FxLMS on primary path
 	else{
@@ -245,16 +245,16 @@ void render(BelaContext *context, void *userData)
 			trainingNoiseBlock[n] = secondarySignal;
 		}	
 		// Perform FxLMS to update weights (don't use output from this)	
-		applyFxLMS(&secondarySignal, &errorBlock, &primaryFilter, stepSize, NULL)
+		applyFxLMS(secondarySignal, errorBlock, primaryFilter, stepSize, NULL);
 
 	}
 
 	// Process output for speaker (hilbert+modulate)
-	processAntiNoise(&context, &antiNoise, &output, currSample);
+	processAntiNoise(context, antiNoise, output, currSample);
 	
 	// Output antiNoise to Speaker
 	for (size_t n = 0; n < context->audioFrames; n++){
-		audioWrite(context, n, speakerChannel, output[n])
+		audioWrite(context, n, speakerChannel, output[n]);
 	}
 
 	currSample = currSample + context->audioFrames;
