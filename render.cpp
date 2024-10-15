@@ -89,7 +89,7 @@ bool setup(BelaContext *context, void *userData)
 */
 void applyFxLMS(const std::vector<float> &reference,
 				const std::vector<float> &error, std::vector<float> &filter,
-				float stepSize, std::vector<float> *output)
+				float stepSize, std::vector<float> &output, bool copyOut)
 {
 	//Ensure reference and error signal are same size
 	if (reference.size() != error.size()) {
@@ -122,8 +122,8 @@ void applyFxLMS(const std::vector<float> &reference,
 			}
 		}
 		// Store filter output
-		if (output != nullptr)
-			(*output)[n] = filterOutput;
+		if (copyOut)
+			output[n] = filterOutput;
 	}
 	
 }
@@ -166,7 +166,7 @@ void processAntiNoise(BelaContext *context, std::vector<float> &antiNoise, std::
 		imBuffer[n] = fft.fdi(n);
 	} 
 	
-	fft.ifft(&reBuffer, &imBuffer);
+	fft.ifft(reBuffer, imBuffer);
 	for (size_t n = 0; n < context->audioFrames; n++) {
 		output[n] = fft.td(n);
 	}
@@ -212,9 +212,9 @@ void render(BelaContext *context, void *userData)
 	// Train secondary path filter if not converged
 	if (!doNoiseControl){
 		prevSecondaryFilter = secondaryFilter;
-		generateNoise(&trainingNoiseBlock, currSample);
+		generateNoise(trainingNoiseBlock, currSample);
 		applyFxLMS(trainingNoiseBlock, errorBlock, secondaryFilter, stepSize, 
-				   &antiNoiseBlock);
+				   antiNoiseBlock, true);
 		
 		/** TODO: CHECK CONVERGANCE CONDITION */
 		doNoiseControl = checkConvergence(secondaryFilter, prevSecondaryFilter, threshold);
@@ -245,12 +245,12 @@ void render(BelaContext *context, void *userData)
 			trainingNoiseBlock[n] = secondarySignal;
 		}	
 		// Perform FxLMS to update weights (don't use output from this)	
-		applyFxLMS(secondarySignal, errorBlock, primaryFilter, stepSize, NULL);
+		applyFxLMS(trainingNoiseBlock, errorBlock, primaryFilter, stepSize, output, false);
 
 	}
 
 	// Process output for speaker (hilbert+modulate)
-	processAntiNoise(context, antiNoise, output, currSample);
+	processAntiNoise(context, antiNoiseBlock, output, currSample);
 	
 	// Output antiNoise to Speaker
 	for (size_t n = 0; n < context->audioFrames; n++){
