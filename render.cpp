@@ -14,7 +14,6 @@
 const float carrierFreq = 40000;
 const float carrierAmp = 0.8;
 
-const float sampleRate = 44100;
 
 const float stepSize = 0.2;
 
@@ -173,7 +172,7 @@ void processAntiNoise(BelaContext *context, std::vector<float> &antiNoise, std::
 
 	// Modulate antiNoise by carrier 
 	for (size_t n = 0; n < context->audioFrames; n++){
-		float wave = sin(2 * M_PI * (n + currSample) * carrierFreq / context->audioSampleRate);
+		float wave = carrierAmp * sin(2 * M_PI * (n + currSample) * carrierFreq / context->audioSampleRate);
 		output[n] = output[n] * wave;
 	}
 	return;
