@@ -15,7 +15,7 @@
  **/
 
 const float carrierFreq = 40000;
-const float carrierAmp = 0.8;
+const float carrierAmp = 1;
 
 
 const float stepSize = 0.2;
@@ -228,6 +228,7 @@ void render(BelaContext *context, void *userData)
 		doNoiseControl = checkConvergence(secondaryFilter, prevSecondaryFilter, threshold);
 		if (doNoiseControl) 
 			rt_printf("Switching To Primary Path Learning\n");
+
 	}
 	// Perform Active Noise Control and FxLMS on primary path
 	else{
