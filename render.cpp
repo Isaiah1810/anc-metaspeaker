@@ -3,8 +3,8 @@
 #include <Bela.h>
 #include <libraries/Fft/Fft.h>
 #include <vector>
-#include <libraries/Convolver/Convolver.h>
 #include <cmath>
+#include <libraries/Scope/Scope.h>
 
 /** @todo 
  * -ACOUSTIC FEEDBACK (antiNoise->Reference needs to be estimated and subtracted)
@@ -50,6 +50,9 @@ std::vector<float> output;
  *	is false when secondary path estimator filter is being trained */
 bool doNoiseControl;
 
+// Create Scope for Viewing
+Scope scope;
+
 bool setup(BelaContext *context, void *userData)
 {
 	currSample = 0;
@@ -74,6 +77,9 @@ bool setup(BelaContext *context, void *userData)
 
 	doNoiseControl = false;
 
+	// Initialize the scope
+	scope.setup(3, context->audioSampleRate);
+	
 	return true;
 }
 
@@ -254,6 +260,8 @@ void render(BelaContext *context, void *userData)
 	// Output antiNoise to Speaker
 	for (size_t n = 0; n < context->audioFrames; n++){
 		audioWrite(context, n, speakerChannel, output[n]);
+		// Log Mic and Speaker Values
+		scope.log(refBlock[n], errorBlock[n], output[n]);
 	}
 
 	currSample = currSample + context->audioFrames;
