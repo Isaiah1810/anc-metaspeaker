@@ -10,7 +10,7 @@
  * -ACOUSTIC FEEDBACK (antiNoise->Reference needs to be estimated and subtracted)
  * I'm hoping for now it isn't an issue due to directionality of meta-speaker
  * -REDUCE AMOUNT OF VECTORS. Theres a bunch of vectors that could be shared to reduce size
- * -There's lag with the inputs of the microphones and block processing. Find way to optimize or reduce lag(maybe block size)
+ * -There's sometimes lag with the inputs of the microphones and block processing. Find way to optimize or reduce lag(maybe block size)
  * Maybe consider doing processing half the time or checking convergence less often
  **/
 
