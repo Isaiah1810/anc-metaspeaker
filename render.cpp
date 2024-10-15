@@ -228,8 +228,6 @@ void render(BelaContext *context, void *userData)
 		doNoiseControl = checkConvergence(secondaryFilter, prevSecondaryFilter, threshold);
 		if (doNoiseControl) 
 			rt_printf("Switching To Primary Path Learning\n");
-		else
-			rt_printf("Secondary Path Estimation\n");
 	}
 	// Perform Active Noise Control and FxLMS on primary path
 	else{
