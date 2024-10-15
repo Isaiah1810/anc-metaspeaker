@@ -9,7 +9,10 @@
 /** @todo 
  * -ACOUSTIC FEEDBACK (antiNoise->Reference needs to be estimated and subtracted)
  * I'm hoping for now it isn't an issue due to directionality of meta-speaker
- * -REDUCE AMOUNT OF VECTORS. Theres a bunch of vectors that could be shared to reduce size**/
+ * -REDUCE AMOUNT OF VECTORS. Theres a bunch of vectors that could be shared to reduce size
+ * -There's lag with the inputs of the microphones and block processing. Find way to optimize or reduce lag(maybe block size)
+ * Maybe consider doing processing half the time or checking convergence less often
+ **/
 
 const float carrierFreq = 40000;
 const float carrierAmp = 0.8;
@@ -223,6 +226,10 @@ void render(BelaContext *context, void *userData)
 		
 		/** TODO: CHECK CONVERGANCE CONDITION */
 		doNoiseControl = checkConvergence(secondaryFilter, prevSecondaryFilter, threshold);
+		if (doNoiseControl) 
+			rt_printf("Switching To Primary Path Learning\n");
+		else
+			rt_printf("Secondary Path Estimation\n");
 	}
 	// Perform Active Noise Control and FxLMS on primary path
 	else{
