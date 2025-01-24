@@ -49,7 +49,6 @@ bool setup(BelaContext *context, void *userData) {
     return true;
 }
 
-// Move generateNoise before any call to it
 void generateNoise(std::vector<float> &noise, unsigned int currSample){
     static std::default_random_engine generator;
     static std::uniform_real_distribution<float> distribution(-1.0, 1.0);
