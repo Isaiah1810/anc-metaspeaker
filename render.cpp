@@ -5,12 +5,13 @@
 #include <vector>
 #include <cmath>
 #include <libraries/Scope/Scope.h>
+#include <libraries/Convolver/Convolver.h>
 
 /** @todo 
  * -ACOUSTIC FEEDBACK (antiNoise->Reference needs to be estimated and subtracted)
  * I'm hoping for now it isn't an issue due to directionality of meta-speaker
  * -REDUCE AMOUNT OF VECTORS. Theres a bunch of vectors that could be shared to reduce size
- * -There's sometimes lag with the inputs of the microphones and block processing. Find way to optimize or reduce lag(maybe block size)
+ * -There's lag with the inputs of the microphones and block processing. Find way to optimize or reduce lag(maybe block size)
  * Maybe consider doing processing half the time or checking convergence less often
  **/
 
@@ -40,7 +41,7 @@ std::vector<float> trainingNoiseBlock;
 // Define filter constants //
 unsigned int primaryFilterSize = 256;
 unsigned int secondaryFilterSize = 256;
-const float threshold = 0.001;
+const float threshold = 0.01;
 
 // Define Filters //
 std::vector<float> primaryFilter;
@@ -65,8 +66,8 @@ bool setup(BelaContext *context, void *userData)
 	errorBlock.resize(context->audioFrames, 0.0f);
 
 	//Initialize Primary and Secondary Path Filters to 
-	primaryFilter.resize(primaryFilterSize, 0.0f);
-	secondaryFilter.resize(secondaryFilterSize, 0.0f);
+	primaryFilter.resize(primaryFilterSize, 0.01f);
+	secondaryFilter.resize(secondaryFilterSize, 0.01f);
 	prevSecondaryFilter.resize(secondaryFilterSize, 0.0f);
 
 	//Initialize antiNoise vector
@@ -103,7 +104,7 @@ void applyFxLMS(const std::vector<float> &reference,
 	if (reference.size() != error.size()) {
 		throw std::invalid_argument("Reference and error signal must be of the same size.");
 	}	
-
+	float errorSum = 0; // Sum of squared error for checking
 	// Set filter order to size of the filter
 	size_t filterOrder = filter.size();
 
@@ -121,7 +122,8 @@ void applyFxLMS(const std::vector<float> &reference,
 		}
 
 		// Get error value from error signal and filter output
-		float errorValue = error[n] - filterOutput;
+		float errorValue = error[n] - filterOutput; // Should be squared error
+		errorSum += errorValue;
 
 		// Update filter coefficients 
 		for (size_t k = 0; k < filterOrder; ++k){
@@ -133,7 +135,6 @@ void applyFxLMS(const std::vector<float> &reference,
 		if (copyOut)
 			output[n] = filterOutput;
 	}
-	
 }
 
 /** 
@@ -195,8 +196,9 @@ void processAntiNoise(BelaContext *context, std::vector<float> &antiNoise, std::
 bool checkConvergence(std::vector<float> &filter, std::vector<float> &prevFilter, float threshold){
 	float delta = 0;
 	for (size_t n = 0; n < filter.size(); ++n){
-		delta += std::abs(filter[n] - prevFilter[n]);
+		delta += pow(filter[n] - prevFilter[n], 2); // Changed to use squared distance
 	}
+	rt_printf("Error: %f \n", delta);
 	return delta < threshold;
 }
 
@@ -214,6 +216,7 @@ void render(BelaContext *context, void *userData)
 		errorBlock[n] = error;
 		// Subtract out Antinoise from reference signal
 		refBlock[n] = ref;
+		//scope.log(ref, error, -1.0f);
 	}
 
 
@@ -267,7 +270,7 @@ void render(BelaContext *context, void *userData)
 	for (size_t n = 0; n < context->audioFrames; n++){
 		audioWrite(context, n, speakerChannel, output[n]);
 		// Log Mic and Speaker Values
-		scope.log(refBlock[n], errorBlock[n], output[n]);
+		scope.log(refBlock[n], errorBlock[n], antiNoiseBlock[n]);
 	}
 
 	currSample = currSample + context->audioFrames;
