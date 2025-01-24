@@ -142,8 +142,8 @@ void applyFxLMS(const std::vector<float> &reference,
  * @param currSample The current elapsed sample from boot
 */
 void generateNoise(std::vector<float> &noise, unsigned int currSample){
-	std::default_random_engine generator;
-	std::uniform_real_distribution<float> distribution(-1.0, 1.0);
+	static std::default_random_engine generator;
+	static std::uniform_real_distribution<float> distribution(-1.0, 1.0);
 	for (size_t n = 0; n < noise.size(); ++n){
 		noise[n] = distribution(generator);
 	}
