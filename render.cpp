@@ -1,280 +1,138 @@
-#include <memory>
-#include <random>
+#include <array>
 #include <Bela.h>
 #include <libraries/Fft/Fft.h>
-#include <vector>
-#include <cmath>
 #include <libraries/Scope/Scope.h>
-#include <libraries/Convolver/Convolver.h>
+#include <cmath>
+#include <random>
 
-/** @todo 
- * -ACOUSTIC FEEDBACK (antiNoise->Reference needs to be estimated and subtracted)
- * I'm hoping for now it isn't an issue due to directionality of meta-speaker
- * -REDUCE AMOUNT OF VECTORS. Theres a bunch of vectors that could be shared to reduce size
- * -There's lag with the inputs of the microphones and block processing. Find way to optimize or reduce lag(maybe block size)
- * Maybe consider doing processing half the time or checking convergence less often
- **/
+// Constants
+const float carrierFreq = 40000.0f;
+const float carrierAmp = 1.0f;
+const float stepSize = 0.2f;
+const unsigned int primaryFilterSize = 256;
+const unsigned int secondaryFilterSize = 256;
+const float convergenceThreshold = 0.01f;
 
-const float carrierFreq = 40000;
-const float carrierAmp = 1;
-
-
-const float stepSize = 0.2;
-
-// Number of samples that have passed
-unsigned int currSample;
-
-// Define Audio Channels //
-const unsigned int refChannel = 0;
-const unsigned int errorChannel = 2;
-const unsigned int speakerChannel = 4;
-// Define microphone input vectors //
-std::vector<float> refBlock;
-std::vector<float> errorBlock;
-
-// Define antiNoise(output) vector //
-std::vector<float> antiNoiseBlock;
-
-// Define training noise for secondary path //
-std::vector<float> trainingNoiseBlock;
-
-// Define filter constants //
-unsigned int primaryFilterSize = 256;
-unsigned int secondaryFilterSize = 256;
-const float threshold = 0.01;
-
-// Define Filters //
-std::vector<float> primaryFilter;
-std::vector<float> secondaryFilter;
-std::vector<float> prevSecondaryFilter;
-
-// Define Output Vector 
+// Global Variables
+unsigned int currSample = 0;
+std::vector<float> refBlock, errorBlock, antiNoiseBlock, trainingNoiseBlock;
+std::vector<float> primaryFilter(primaryFilterSize, 0.01f);
+std::vector<float> secondaryFilter(secondaryFilterSize, 0.01f);
+std::vector<float> prevSecondaryFilter(secondaryFilterSize, 0.0f);
 std::vector<float> output;
-/** Boolean representing whether to train primary path and run noise control.
- *	is false when secondary path estimator filter is being trained */
-bool doNoiseControl;
-
-// Create Scope for Viewing
 Scope scope;
+Fft fft;
+bool doNoiseControl = false;
 
-bool setup(BelaContext *context, void *userData)
-{
-	currSample = 0;
+// Precomputed modulation buffer
+std::vector<float> modulationBuffer;
 
-	//Initialize microphone input vectors to 0
-	refBlock.resize(context->audioFrames, 0.0f);
-	errorBlock.resize(context->audioFrames, 0.0f);
-
-	//Initialize Primary and Secondary Path Filters to 
-	primaryFilter.resize(primaryFilterSize, 0.01f);
-	secondaryFilter.resize(secondaryFilterSize, 0.01f);
-	prevSecondaryFilter.resize(secondaryFilterSize, 0.0f);
-
-	//Initialize antiNoise vector
-	antiNoiseBlock.resize(context->audioFrames, 0.0f);
-
-	// Initialize training noise vector 
-	trainingNoiseBlock.resize(context->audioFrames, 0.0f);
-
-	// Initialize Output Vector
-	output.resize(context->audioFrames, 0.0f);
-
-	doNoiseControl = false;
-
-	// Initialize the scope
-	scope.setup(3, context->audioSampleRate);
-	
-	return true;
+// Function to initialize modulation buffer
+void initializeModulationBuffer(size_t blockSize, float sampleRate) {
+    modulationBuffer.resize(blockSize);
+    for (size_t n = 0; n < blockSize; ++n) {
+        modulationBuffer[n] = carrierAmp * sinf(2.0f * M_PI * carrierFreq * n / sampleRate);
+    }
 }
 
-/** 
- * @brief Updates a filter using FxLMS, and applies the filter to reference signal. 
- * @param reference the audio block from the reference signal
- * @param error the audio block from the error mic
- * @param filter the filter coefficients
- * @param stepsSize step size for FxLMS
- * @param filterOrder the order of the filter
- * @param output the vector to which the output of the reference and the filter is stored
-*/
-void applyFxLMS(const std::vector<float> &reference,
-				const std::vector<float> &error, std::vector<float> &filter,
-				float stepSize, std::vector<float> &output, bool copyOut)
-{
-	//Ensure reference and error signal are same size
-	if (reference.size() != error.size()) {
-		throw std::invalid_argument("Reference and error signal must be of the same size.");
-	}	
-	float errorSum = 0; // Sum of squared error for checking
-	// Set filter order to size of the filter
-	size_t filterOrder = filter.size();
+bool setup(BelaContext *context, void *userData) {
+    size_t blockSize = context->audioFrames;
+    refBlock.resize(blockSize, 0.0f);
+    errorBlock.resize(blockSize, 0.0f);
+    antiNoiseBlock.resize(blockSize, 0.0f);
+    trainingNoiseBlock.resize(blockSize, 0.0f);
+    output.resize(blockSize, 0.0f);
+    initializeModulationBuffer(blockSize, context->audioSampleRate);
 
-	// Initialize output to correct size
-	size_t numSamples = reference.size();
-	output.resize(numSamples);
-
-	for (size_t n = 0; n < numSamples; ++n){
-		// Convolve the filter with the reference signal
-		float filterOutput = 0;
-		for (size_t k = 0; k < filterOrder; ++k){
-			if (n >= k){
-				filterOutput += filter[k] * reference[n - k];
-			}
-		}
-
-		// Get error value from error signal and filter output
-		float errorValue = error[n] - filterOutput; // Should be squared error
-		errorSum += errorValue;
-
-		// Update filter coefficients 
-		for (size_t k = 0; k < filterOrder; ++k){
-			if (n >= k){
-				filter[k] += stepSize * errorValue * reference[n - k];
-			}
-		}
-		// Store filter output
-		if (copyOut)
-			output[n] = filterOutput;
-	}
+    fft.setup(blockSize);
+    scope.setup(3, context->audioSampleRate);
+    return true;
 }
 
-/** 
- * @brief Generates training noise for use in secondary path estimation learning
- * @param noise Vector where noise is writen to
- * @param currSample The current elapsed sample from boot
-*/
+// Move generateNoise before any call to it
 void generateNoise(std::vector<float> &noise, unsigned int currSample){
-	static std::default_random_engine generator;
-	static std::uniform_real_distribution<float> distribution(-1.0, 1.0);
-	for (size_t n = 0; n < noise.size(); ++n){
-		noise[n] = distribution(generator);
-	}
-	return;
+    static std::default_random_engine generator;
+    static std::uniform_real_distribution<float> distribution(-1.0, 1.0);
+    for (size_t n = 0; n < noise.size(); ++n){
+        noise[n] = distribution(generator);
+    }
+    return;
 }
 
-/**
- * @brief Modulates audio to carrier frequency and removes negative baseband using hilber transform
- * @param context Bela context
- * @param antiNoise The audio to be processed
- * @param output A vector to where the processed audio is written
- * @param currSample The number of samples that have passed since the begining of the program
- * 
-*/
 
-// SHOULD BE HILBERT THEN MODULATE NOT VIS VERSA
-void processAntiNoise(BelaContext *context, std::vector<float> &antiNoise, std::vector<float> &output, unsigned int currSample){
+void applyFxLMS(const std::vector<float> &reference, const std::vector<float> &error,
+                std::vector<float> &filter, float stepSize, std::vector<float> &output, bool copyOut) {
+    size_t filterOrder = filter.size();
+    size_t numSamples = reference.size();
 
-	static Fft fft(context->audioFrames);
-	fft.setup(context->audioFrames);
-	fft.fft(antiNoise);
-	
-	// Remove Negative Basebands with Hilbert Transform (Set buffers to zero, copy only first half)
+    for (size_t n = 0; n < numSamples; ++n) {
+        float filterOutput = 0.0f;
+        for (size_t k = 0; k < filterOrder && n >= k; ++k) {
+            filterOutput += filter[k] * reference[n - k];
+        }
+
+        float errorValue = error[n] - filterOutput;
+        for (size_t k = 0; k < filterOrder && n >= k; ++k) {
+            filter[k] += stepSize * errorValue * reference[n - k];
+        }
+
+        if (copyOut) output[n] = filterOutput;
+    }
+}
+
+void processAntiNoise(const std::vector<float> &antiNoise, std::vector<float> &output, BelaContext *context) {
+    fft.fft(antiNoise);
+    size_t blockSize = output.size();
+    
 	std::vector<float> reBuffer(context->audioFrames, 0.0f);
 	std::vector<float> imBuffer(context->audioFrames, 0.0f);
-	for (size_t n = 0; n < context->audioFrames / 2; n++) {
-		reBuffer[n] = fft.fdr(n);
-		imBuffer[n] = fft.fdi(n);
-	} 
-	
-	fft.ifft(reBuffer, imBuffer);
-	for (size_t n = 0; n < context->audioFrames; n++) {
-		output[n] = fft.td(n);
-	}
 
-	// Modulate antiNoise by carrier 
-	for (size_t n = 0; n < context->audioFrames; n++){
-		float wave = carrierAmp * sin(2 * M_PI * (n + currSample) * carrierFreq / context->audioSampleRate);
-		output[n] = output[n] * wave;
-	}
-	return;
+	
+    // Remove negative frequencies
+    for (size_t n = blockSize / 2; n < blockSize; ++n) {
+        reBuffer[n] = fft.fdr(n);
+        imBuffer[n] = fft.fdi(n);
+    }
+
+    fft.ifft(reBuffer, imBuffer);
+    for (size_t n = 0; n < blockSize; ++n) {
+        output[n] = fft.td(n) * modulationBuffer[n];
+    }
 }
 
-/// @brief Determines whether a given filter has converged using coefficient stability
-/// @param filter The currently updated filter
-/// @param prevFilter The previous filter
-/// @param threshold The threshold for convergance 
-/// @return True if absolutue difference is less than threshold, otherwise, false
-bool checkConvergence(std::vector<float> &filter, std::vector<float> &prevFilter, float threshold){
-	float delta = 0;
-	for (size_t n = 0; n < filter.size(); ++n){
-		delta += pow(filter[n] - prevFilter[n], 2); // Changed to use squared distance
-	}
-	rt_printf("Error: %f \n", delta);
-	return delta < threshold;
+bool checkConvergence(const std::vector<float> &filter, const std::vector<float> &prevFilter) {
+    float delta = 0.0f;
+    for (size_t n = 0; n < filter.size(); ++n) {
+        delta += (filter[n] - prevFilter[n]) * (filter[n] - prevFilter[n]);
+    }
+    return delta < convergenceThreshold;
 }
 
+void render(BelaContext *context, void *userData) {
+    size_t blockSize = context->audioFrames;
+    for (size_t n = 0; n < blockSize; ++n) {
+        refBlock[n] = audioRead(context, n, 0);  // Reference mic
+        errorBlock[n] = audioRead(context, n, 2); // Error mic
+    }
 
-void render(BelaContext *context, void *userData)
-{
-	float ref;
-	float error;
-	
-	//Read input from microphones and store them into vectors
-	for (unsigned int n = 0; n < context->audioFrames; n++){
-		// Read analog frames for both microphones
-		ref = audioRead(context, n, refChannel);
-		error = audioRead(context, n, errorChannel);
-		errorBlock[n] = error;
-		// Subtract out Antinoise from reference signal
-		refBlock[n] = ref;
-		//scope.log(ref, error, -1.0f);
-	}
+    if (!doNoiseControl) {
+        prevSecondaryFilter = secondaryFilter;
+        generateNoise(trainingNoiseBlock, currSample);
+        applyFxLMS(trainingNoiseBlock, errorBlock, secondaryFilter, stepSize, antiNoiseBlock, true);
+        doNoiseControl = checkConvergence(secondaryFilter, prevSecondaryFilter);
+    } else {
+        applyFxLMS(refBlock, errorBlock, primaryFilter, stepSize, antiNoiseBlock, true);
+    }
 
+    processAntiNoise(antiNoiseBlock, output, context);
+    for (size_t n = 0; n < blockSize; ++n) {
+        audioWrite(context, n, 4, output[n]);
+        scope.log(refBlock[n], errorBlock[n], antiNoiseBlock[n]);
+    }
 
-	// Train secondary path filter if not converged
-	if (!doNoiseControl){
-		prevSecondaryFilter = secondaryFilter;
-		generateNoise(trainingNoiseBlock, currSample);
-		applyFxLMS(trainingNoiseBlock, errorBlock, secondaryFilter, stepSize, 
-				   antiNoiseBlock, true);
-		
-		/** TODO: CHECK CONVERGANCE CONDITION */
-		doNoiseControl = checkConvergence(secondaryFilter, prevSecondaryFilter, threshold);
-		if (doNoiseControl) 
-			rt_printf("Switching To Primary Path Learning\n");
-
-	}
-	// Perform Active Noise Control and FxLMS on primary path
-	else{
-		// Convolve reference signal with primary path 
-		for (size_t n = 0; n < context->audioFrames; n++){
-			float primarySignal = 0;
-			for (size_t k = 0; k < primaryFilter.size(); k++){
-				if (n >= k){
-					primarySignal += primaryFilter[k] * refBlock[n - k];
-				}
-			}
-			// Invert primary path signal 
-			antiNoiseBlock[n] = -primarySignal;
-		}
-
-		// Convolve reference with secondary path
-		for (size_t n = 0; n < context->audioFrames; n++){
-			float secondarySignal = 0;
-			for (size_t k = 0; k < secondaryFilter.size(); k++){
-				if (n >= k){
-					secondarySignal += secondaryFilter[k] * refBlock[n - k];
-				}
-			}
-			// NOTE: Reusing trainingNoiseBlock since it does nothing on this branch
-			trainingNoiseBlock[n] = secondarySignal;
-		}	
-		// Perform FxLMS to update weights (don't use output from this)	
-		applyFxLMS(trainingNoiseBlock, errorBlock, primaryFilter, stepSize, output, false);
-
-	}
-
-	// Process output for speaker (hilbert+modulate)
-	processAntiNoise(context, antiNoiseBlock, output, currSample);
-	
-	// Output antiNoise to Speaker
-	for (size_t n = 0; n < context->audioFrames; n++){
-		audioWrite(context, n, speakerChannel, output[n]);
-		// Log Mic and Speaker Values
-		scope.log(refBlock[n], errorBlock[n], antiNoiseBlock[n]);
-	}
-
-	currSample = currSample + context->audioFrames;
+    currSample += blockSize;
 }
+
 
 void cleanup(BelaContext *context, void *userData)
 {
