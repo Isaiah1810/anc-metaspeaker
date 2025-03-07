@@ -10,7 +10,7 @@
 //const float carrierFreq = 40000.0f;
 const float carrierFreq = 0.0f;
 const float carrierAmp = 2.0f;
-const float stepSize = 0.05f;
+const float stepSize = 0.0001f;
 const unsigned int primaryFilterSize = 256;
 const unsigned int secondaryFilterSize = 256;
 const float convergenceThreshold = 0.01f;
@@ -32,8 +32,12 @@ float gFrequency1 = 440.0;	// Frequency of the sine wave in Hz
 float gAmplitude = .30f;		// Amplitude of the sine wave (1.0 is maximum)
 float sampleRate;
 float gPhase1 = 0;
-// Simulated filter
+
+// Simulated primary path impulse function
 std::vector<float> testFilter = {1.0, 0.0, 0.0, 0.0, 0.5}; 
+
+// Simulated secondary path impulse function 
+std::vector<float> secondaryTestFilter = {1.0, 0.0, 0.0, 0.0, 0.3};
 
 // Precomputed modulation buffer
 std::vector<float> modulationBuffer;
@@ -172,6 +176,7 @@ void render(BelaContext *context, void *userData) {
     //     errorBlock[n] = audioRead(context, n, 2); // Error mic
     // }
 
+	// Simulation Code
 	for (unsigned int n = 0; n < context->audioFrames; n++) {
 	    // TODO: Calculate a sample of the sine wave
 	    //       Start by copying the calculation from the 'sine-generator' project
@@ -182,6 +187,7 @@ void render(BelaContext *context, void *userData) {
 		refBlock[n] = gAmplitude * sin(gPhase1);
 		}
 		
+	// Convolve simulated sine wave with ground primary path
 	std::vector<float> tempErrorBlock(blockSize, 0.0f);
 	for (size_t i = 0; i < blockSize; ++i) {
 	    for (size_t j = 0; j < testFilter.size() && (i + j) < blockSize; ++j) {
