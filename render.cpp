@@ -8,11 +8,11 @@
 
 // Configuration
 constexpr bool SIMULATION = true;
-constexpr int IMPULSE_SIZE = 128;
+constexpr int IMPULSE_SIZE = 64;
 constexpr int REFERENCE_CHANNEL = 0;
 constexpr int ERROR_CHANNEL = 2;
 constexpr int OUTPUT_CHANNEL = 4;
-constexpr float STEP_SIZE = 0.001f;
+constexpr float STEP_SIZE = 0.0001f;
 constexpr float CONVERGENCE_THRESHOLD = 0.001f;
 constexpr float SMALL_VALUE = 1e-6f; // Avoid division by zero
 
@@ -102,7 +102,7 @@ public:
         // Initialize filters with small random values
         for (int i = 0; i < IMPULSE_SIZE; ++i) {
             primaryPath[i] = initDist(rng);
-            secondaryPath[i] = 0.0f;
+            secondaryPath[i] = initDist(rng);
             outputBuffer[i] = 0.01f * initDist(rng);
             referenceBuffer[i] = 0.0f;
             excitationBuffer[i] = 0.0f;
@@ -153,7 +153,7 @@ public:
                 float primaryOutput = 0.0f;
                 float secondaryOutput = 0.0f;
                 
-                // Optimized convolution using array indexing
+                // Convolve primary and secondary paths with reference and output respectivly 
                 for (int k = 0; k < IMPULSE_SIZE; ++k) {
                     int refIdx = (referenceIdx - k + IMPULSE_SIZE) % IMPULSE_SIZE;
                     primaryOutput += primaryGroundTruth[k] * referenceBuffer[refIdx];
@@ -208,7 +208,7 @@ public:
         
         // Generate and output excitation signal
         for (int n = 0; n < context->audioFrames; ++n) {
-            float excitation = generateWhiteNoise(0.6f);
+            float excitation = generateWhiteNoise(0.2f);
             excitationBuffer[excitationIdx] = excitation;
             excitationIdx = (excitationIdx + 1) % IMPULSE_SIZE;
             
