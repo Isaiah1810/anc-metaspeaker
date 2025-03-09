@@ -6,6 +6,20 @@
 #include <random>
 #include <memory>
 
+/** OSCILLOSCOPE LEGEND
+ * Secondary Path Estimation:
+ * red: error mic signal
+ * blue: lms output (estimated secondary path with excitation signal)
+ * green: excitation signal
+ * 
+ * Primary Path Estimation:
+ * red: reference mic signal
+ * blue: error mic signal
+ * green: adaptive filter OUTPUT_CHANNEL
+ * orange: lms error
+ * **/
+
+
 // Configuration
 constexpr bool SIMULATION = true;
 constexpr int IMPULSE_SIZE = 64;
