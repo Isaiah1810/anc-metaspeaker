@@ -1,224 +1,328 @@
-
 #include <array>
 #include <Bela.h>
 #include <libraries/Fft/Fft.h>
 #include <libraries/Scope/Scope.h>
 #include <cmath>
 #include <random>
+#include <memory>
 
-// Constants
-//const float carrierFreq = 40000.0f;
-const float carrierFreq = 0.0f;
-const float carrierAmp = 2.0f;
-const float stepSize = 0.0001f;
-const unsigned int primaryFilterSize = 256;
-const unsigned int secondaryFilterSize = 256;
-const float convergenceThreshold = 0.01f;
+// Configuration
+constexpr bool SIMULATION = true;
+constexpr int IMPULSE_SIZE = 128;
+constexpr int REFERENCE_CHANNEL = 0;
+constexpr int ERROR_CHANNEL = 2;
+constexpr int OUTPUT_CHANNEL = 4;
+constexpr float STEP_SIZE = 0.001f;
+constexpr float CONVERGENCE_THRESHOLD = 0.001f;
+constexpr float SMALL_VALUE = 1e-6f; // Avoid division by zero
 
-// Global Variables
-unsigned int currSample = 0;
-std::vector<float> refBlock, errorBlock, antiNoiseBlock, trainingNoiseBlock;
-std::vector<float> primaryFilter(primaryFilterSize, 0.01f);
-std::vector<float> secondaryFilter(secondaryFilterSize, 0.01f);
-std::vector<float> prevSecondaryFilter(secondaryFilterSize, 0.0f);
-std::vector<float> output;
-Scope scope;
-Fft fft;
-bool doNoiseControl = false;
+// Class to handle Adaptive Noise Cancellation
+class AdaptiveNoiseCanceller {
+private:
+    // Bela signal buffers 
+    std::vector<float> referenceSignal;
+    std::vector<float> errorSignal;
+    
+    // Filter coefficients
+    std::array<float, IMPULSE_SIZE> primaryPath;
+    std::array<float, IMPULSE_SIZE> secondaryPath;
+    
+    // Circular buffers
+    std::array<float, IMPULSE_SIZE> referenceBuffer;
+    std::array<float, IMPULSE_SIZE> excitationBuffer;
+    std::array<float, IMPULSE_SIZE> outputBuffer;
+    std::array<float, IMPULSE_SIZE> filteredReference;
+    
+    // Buffer indices
+    int referenceIdx = 0;
+    int excitationIdx = 0;
+    int outputIdx = 0;
+    
+    // Simulation parameters
+    std::array<float, IMPULSE_SIZE> primaryGroundTruth;
+    std::array<float, IMPULSE_SIZE> secondaryGroundTruth;
+    
+    // Sine wave generation for simulation
+    float frequency = 440.0f;
+    float amplitude = 0.2f;
+    float phase = 0.0f;
+    float sampleRate = 44100.0f;
+    
+    // State tracking
+    bool secondaryPathLearned = false;
+    int totalSamples = 0;
+    
+    // Random number generator
+    std::mt19937 rng;
+    std::uniform_real_distribution<float> dist{-0.5f, 0.5f};
+    
+    Scope& scope;
 
-
-// Constants for simulation
-float gFrequency1 = 440.0;	// Frequency of the sine wave in Hz
-float gAmplitude = .30f;		// Amplitude of the sine wave (1.0 is maximum)
-float sampleRate;
-float gPhase1 = 0;
-
-// Simulated primary path impulse function
-std::vector<float> testFilter = {1.0, 0.0, 0.0, 0.0, 0.5}; 
-
-// Simulated secondary path impulse function 
-std::vector<float> secondaryTestFilter = {1.0, 0.0, 0.0, 0.0, 0.3};
-
-// Precomputed modulation buffer
-std::vector<float> modulationBuffer;
-
-// Function to initialize modulation buffer
-void initializeModulationBuffer(size_t blockSize, float sampleRate) {
-    modulationBuffer.resize(blockSize);
-    for (size_t n = 0; n < blockSize; ++n) {
-        modulationBuffer[n] = carrierAmp * sinf(2.0f * M_PI * carrierFreq * n / sampleRate);
+public:
+    AdaptiveNoiseCanceller(BelaContext* context, Scope& scopeRef) 
+        : scope(scopeRef), rng(std::random_device{}()) {
+        
+        // Initialize buffers
+        referenceSignal.resize(context->audioFrames, 0.0f);
+        errorSignal.resize(context->audioFrames, 0.0f);
+        
+        // Initialize filters
+        initializeGroundTruthFilters();
+        initializeFiltersRandomly();
+        
+        // Set sample rate
+        sampleRate = context->audioSampleRate;
     }
-}
-
-/**
- * Initializes vectors, fft module, osciliscope and modulation buffer 
- * 
- **/
-bool setup(BelaContext *context, void *userData) {
-    size_t blockSize = context->audioFrames;
     
-    refBlock.resize(blockSize, 0.0f);
-    errorBlock.resize(blockSize, 0.0f);
-    
-    antiNoiseBlock.resize(blockSize, 0.0f);
-    trainingNoiseBlock.resize(blockSize, 0.0f);
-    output.resize(blockSize, 0.0f);
-    initializeModulationBuffer(blockSize, context->audioSampleRate);
-    
-	sampleRate = context->audioSampleRate;
-
-    fft.setup(blockSize);
-    scope.setup(4, context->audioSampleRate);
-    return true;
-}
-
-/**
- * Given the specific block since start, generate some known random noise
- * 
- * &noise: Reference to a vector to where the noise will be stored into 
- * currSample: an integer representing the number of samples passed since begining of the program
- **/
-void generateNoise(std::vector<float> &noise, unsigned int currSample){
-    static std::default_random_engine generator;
-    static std::uniform_real_distribution<float> distribution(-1.0, 1.0);
-    for (size_t n = 0; n < noise.size(); ++n){
-        noise[n] = distribution(generator);
+    // Generate white noise with specified amplitude
+    inline float generateWhiteNoise(float amp) {
+        return amp * dist(rng);
     }
-    return;
-}
-
-
-/**
- *  Applies FxLMS adaptive filtering algorithm on a specific filter vector
- * 
- *&reference: A vector containing the reference signal to be compared to
- *&error: A vector containing the error mic signal to find the difference from 
- *&filter: A vector that represents filter coefficients to be learned/updated
- *stepSize: Learning rate of FxLMS
- *&output: A vector to where to copy output of filter with reference
- *&copyOut: Whether to write to the output vector
- **/
-void applyFxLMS(const std::vector<float> &reference, const std::vector<float> &error,
-                std::vector<float> &filter, float stepSize, std::vector<float> &output, bool copyOut) {
-    size_t filterOrder = filter.size();
-    size_t numSamples = reference.size();
-
-    for (size_t n = 0; n < numSamples; ++n) {
-        float filterOutput = 0.0f;
-        for (size_t k = 0; k < filterOrder && n >= k; ++k) {
-            filterOutput += filter[k] * reference[n - k];
+    
+    // Initialize filters with ground truth values for simulation
+    void initializeGroundTruthFilters() {
+        // Primary path: 10ms delay, low pass filter
+        std::fill(primaryGroundTruth.begin(), primaryGroundTruth.end(), 0.0f);
+        primaryGroundTruth[20] = 0.8f;
+        primaryGroundTruth[25] = -0.4f;
+        primaryGroundTruth[30] = 0.2f;
+        
+        // Secondary path: 5ms delay, low pass filter
+        std::fill(secondaryGroundTruth.begin(), secondaryGroundTruth.end(), 0.0f);
+        secondaryGroundTruth[10] = 0.6f;
+        secondaryGroundTruth[12] = -0.3f;
+        secondaryGroundTruth[15] = 0.1f;
+    }
+    
+    // Initialize filters with small random values
+    void initializeFiltersRandomly() {
+        // Random distribution for filter initialization
+        std::uniform_real_distribution<float> initDist{-0.1f, 0.1f};
+        
+        // Initialize filters with small random values
+        for (int i = 0; i < IMPULSE_SIZE; ++i) {
+            primaryPath[i] = initDist(rng);
+            secondaryPath[i] = 0.0f;
+            outputBuffer[i] = 0.01f * initDist(rng);
+            referenceBuffer[i] = 0.0f;
+            excitationBuffer[i] = 0.0f;
+            filteredReference[i] = 0.0f;
         }
-
-        float errorValue = error[n] - filterOutput;
-        for (size_t k = 0; k < filterOrder && n >= k; ++k) {
-            filter[k] += stepSize * errorValue * reference[n - k];
+    }
+    
+    // Process a block of audio samples
+    void process(BelaContext* context) {
+        // Read or generate input signals
+        readInputSignals(context);
+        
+        // Choose algorithm based on state
+        if (!secondaryPathLearned) {
+            learnSecondaryPath(context);
+        } else {
+            applyFxNLMS(context);
         }
-
-        if (copyOut) output[n] = filterOutput;
     }
-}
-
-void processAntiNoise(const std::vector<float> &antiNoise, std::vector<float> &output, BelaContext *context) {
-    fft.fft(antiNoise);
-    size_t blockSize = output.size();
     
-	std::vector<float> reBuffer(context->audioFrames, 0.0f);
-	std::vector<float> imBuffer(context->audioFrames, 0.0f);
-
-	
-    // Remove negative frequencies
-    for (size_t n = blockSize / 2; n < blockSize; ++n) {
-        reBuffer[n] = fft.fdr(n);
-        imBuffer[n] = fft.fdi(n);
-    }
-
-    fft.ifft(reBuffer, imBuffer);
-    for (size_t n = 0; n < blockSize; ++n) {
-        output[n] = fft.td(n) * modulationBuffer[n];
-    }
-}
-
-bool checkConvergence(const std::vector<float> &filter, const std::vector<float> &prevFilter) {
-    float delta = 0.0f;
-    for (size_t n = 0; n < filter.size(); ++n) {
-        delta += (filter[n] - prevFilter[n]) * (filter[n] - prevFilter[n]);
-    }
-    return delta < convergenceThreshold;
-}
-
-
-void convolve(const std::vector<float>& signal, 
-              const std::vector<float>& filter, 
-              std::vector<float>& output) {
-    int signalSize = signal.size();
-    int filterSize = filter.size();
-    
-    // Ensure the output vector has the correct size
-    output.assign(signalSize, 0.0f);
-
-    // Perform FIR filtering (convolution with fixed output size)
-    for (int i = 0; i < signalSize; i++) {
-        for (int j = 0; j < filterSize; j++) {
-            if (i - j >= 0) {  // Prevent out-of-bounds access
-                output[i] += signal[i - j] * filter[j];
+    // Read input signals from microphones or generate simulated signals
+    void readInputSignals(BelaContext* context) {
+        if (!SIMULATION) {
+            // Read microphone inputs
+            for (int n = 0; n < context->audioFrames; ++n) {
+                totalSamples++;
+                referenceSignal[n] = audioRead(context, n, REFERENCE_CHANNEL);
+                referenceBuffer[referenceIdx] = referenceSignal[n];
+                referenceIdx = (referenceIdx + 1) % IMPULSE_SIZE;
+                
+                errorSignal[n] = audioRead(context, n, ERROR_CHANNEL);
+            }
+        } else {
+            // Generate simulated inputs
+            for (unsigned int n = 0; n < context->audioFrames; n++) {
+                totalSamples++;
+                
+                // Generate sine wave reference
+                phase += 2.0f * M_PI * frequency / sampleRate;
+                if (phase > 2.0f * M_PI) {
+                    phase -= 2.0f * M_PI;
+                }
+                
+                referenceSignal[n] = amplitude * sinf(phase);
+                referenceBuffer[referenceIdx] = referenceSignal[n];
+                
+                // Convolve reference with primary path and output with secondary path
+                float primaryOutput = 0.0f;
+                float secondaryOutput = 0.0f;
+                
+                // Optimized convolution using array indexing
+                for (int k = 0; k < IMPULSE_SIZE; ++k) {
+                    int refIdx = (referenceIdx - k + IMPULSE_SIZE) % IMPULSE_SIZE;
+                    primaryOutput += primaryGroundTruth[k] * referenceBuffer[refIdx];
+                    
+                    int outIdx = (outputIdx - k - (context->audioFrames - n) + IMPULSE_SIZE) % IMPULSE_SIZE;
+                    secondaryOutput += secondaryGroundTruth[k] * outputBuffer[outIdx];
+                }
+                
+                referenceIdx = (referenceIdx + 1) % IMPULSE_SIZE;
+                errorSignal[n] = primaryOutput + secondaryOutput;
             }
         }
     }
-}
-
-
-
-
-void render(BelaContext *context, void *userData) {
-    size_t blockSize = context->audioFrames;
-    // for (size_t n = 0; n < blockSize; ++n) {
-    //     refBlock[n] = audioRead(context, n, 0);  // Reference mic
-    //     errorBlock[n] = audioRead(context, n, 2); // Error mic
-    // }
-
-	// Simulation Code
-	for (unsigned int n = 0; n < context->audioFrames; n++) {
-	    // TODO: Calculate a sample of the sine wave
-	    //       Start by copying the calculation from the 'sine-generator' project
-	    gPhase1 += 2.0 * M_PI * gFrequency1 / sampleRate;
-	    if (gPhase1 > 2.0 * M_PI) {
-	    	gPhase1 -= 2.0 * M_PI;
-		}
-		refBlock[n] = gAmplitude * sin(gPhase1);
-		}
-		
-	// Convolve simulated sine wave with ground primary path
-	std::vector<float> tempErrorBlock(blockSize, 0.0f);
-	for (size_t i = 0; i < blockSize; ++i) {
-	    for (size_t j = 0; j < testFilter.size() && (i + j) < blockSize; ++j) {
-	        tempErrorBlock[i + j] += refBlock[i] * testFilter[j];
-	    }
-	}
-errorBlock = tempErrorBlock;
-		
-    if (!doNoiseControl) {
-        prevSecondaryFilter = secondaryFilter;
-        generateNoise(trainingNoiseBlock, currSample);
-        applyFxLMS(trainingNoiseBlock, errorBlock, secondaryFilter, stepSize, antiNoiseBlock, true);
-        doNoiseControl = checkConvergence(secondaryFilter, prevSecondaryFilter);
-        rt_printf("Secondary Path Learned \n");
+    
+    // Learn the secondary path using white noise excitation
+    void learnSecondaryPath(BelaContext* context) {
+        float blockError = 0.0f;
         
-    } else {
-    	//convolve(refBlock, secondaryFilter, output);
-        applyFxLMS(refBlock, errorBlock, primaryFilter, stepSize, antiNoiseBlock, true);
+        // Process each sample
+        for (int n = 0; n < context->audioFrames; ++n) {
+            // Convolve excitation with estimated secondary path
+            float filterOutput = 0.0f;
+            
+            for (int k = 0; k < IMPULSE_SIZE; ++k) {
+                int excitIdx = (excitationIdx - k - (context->audioFrames - n) + IMPULSE_SIZE) % IMPULSE_SIZE;
+                filterOutput += excitationBuffer[excitIdx] * secondaryPath[k];
+            }
+            
+            // Calculate LMS error
+            float lmsError = errorSignal[n] - filterOutput;
+            blockError += lmsError * lmsError;
+            
+            // Calculate excitation signal power for normalization
+            float excitationPower = SMALL_VALUE;
+            for (int k = 0; k < IMPULSE_SIZE; ++k) {
+                int excitIdx = (excitationIdx - k - (context->audioFrames - n) + IMPULSE_SIZE) % IMPULSE_SIZE;
+                float sample = excitationBuffer[excitIdx];
+                excitationPower += sample * sample;
+            }
+            
+            // Update filter coefficients using NLMS
+            float normalizedStepSize = STEP_SIZE / excitationPower;
+            for (int k = 0; k < IMPULSE_SIZE; ++k) {
+                int excitIdx = (excitationIdx - k - (context->audioFrames - n) + IMPULSE_SIZE) % IMPULSE_SIZE;
+                secondaryPath[k] += normalizedStepSize * lmsError * excitationBuffer[excitIdx];
+            }
+            
+            // Log to scope for debugging
+            int currentExcitIdx = (excitationIdx - (context->audioFrames - n) + IMPULSE_SIZE) % IMPULSE_SIZE;
+            scope.log(errorSignal[n], filterOutput, excitationBuffer[currentExcitIdx]);
+        }
+        
+        // Generate and output excitation signal
+        for (int n = 0; n < context->audioFrames; ++n) {
+            float excitation = generateWhiteNoise(0.6f);
+            excitationBuffer[excitationIdx] = excitation;
+            excitationIdx = (excitationIdx + 1) % IMPULSE_SIZE;
+            
+            // Output the excitation signal
+            if (!SIMULATION) {
+                audioWrite(context, n, OUTPUT_CHANNEL, excitation);
+            } else {
+                outputIdx = (outputIdx + 1) % IMPULSE_SIZE;
+                outputBuffer[outputIdx] = excitation;
+            }
+        }
+        
+        // Check convergence
+        if ((totalSamples > (context->audioFrames + 1)) && 
+            (blockError / context->audioFrames) < CONVERGENCE_THRESHOLD) {
+            secondaryPathLearned = true;
+            rt_printf("Secondary path learned at sample %i\n", totalSamples);
+        }
     }
-
-    processAntiNoise(antiNoiseBlock, output, context);
-    for (size_t n = 0; n < blockSize; ++n) {
-        audioWrite(context, n, 4, -antiNoiseBlock[n]);
-        scope.log(refBlock[n], errorBlock[n], -antiNoiseBlock[n], errorBlock[n]- antiNoiseBlock[n]);
+    
+    // Apply the Filtered-X Normalized LMS algorithm
+    void applyFxNLMS(BelaContext* context) {
+        // Pre-compute filtered reference signal through secondary path
+        for (int n = 0; n < context->audioFrames; ++n) {
+            float xFiltered = 0.0f;
+            for (int k = 0; k < IMPULSE_SIZE; ++k) {
+                int refIdx = (referenceIdx - k + IMPULSE_SIZE - (context->audioFrames - n)) % IMPULSE_SIZE;
+                xFiltered += secondaryPath[k] * referenceBuffer[refIdx];
+            }
+            
+            int filtIdx = (referenceIdx - (context->audioFrames - n) + IMPULSE_SIZE + 1) % IMPULSE_SIZE;
+            filteredReference[filtIdx] = xFiltered;
+        }
+        
+        // Process each sample with FxNLMS
+        for (int n = 0; n < context->audioFrames; ++n) {
+            // Convolve filtered reference with primary path
+            float filterOutput = 0.0f;
+            for (int k = 0; k < IMPULSE_SIZE; ++k) {
+                int filtIdx = (referenceIdx - k - (context->audioFrames - n) + IMPULSE_SIZE) % IMPULSE_SIZE;
+                filterOutput += primaryPath[k] * filteredReference[filtIdx];
+            }
+            
+            float lmsError = errorSignal[n] - filterOutput;
+            
+            // Calculate power of filtered reference for normalization
+            float filteredReferencePower = SMALL_VALUE;
+            for (int k = 0; k < IMPULSE_SIZE; ++k) {
+                int filtIdx = (referenceIdx - k - (context->audioFrames - n) + IMPULSE_SIZE) % IMPULSE_SIZE;
+                float sample = filteredReference[filtIdx];
+                filteredReferencePower += sample * sample;
+            }
+            
+            // Update filter coefficients using FxNLMS
+            float normalizedStepSize = STEP_SIZE / filteredReferencePower;
+            for (int k = 0; k < IMPULSE_SIZE; ++k) {
+                int filtIdx = (referenceIdx - k - (context->audioFrames - n) + IMPULSE_SIZE) % IMPULSE_SIZE;
+                primaryPath[k] += normalizedStepSize * lmsError * filteredReference[filtIdx];
+            }
+            
+            // Log to scope for debugging
+            scope.log(referenceSignal[n], errorSignal[n], -filterOutput, lmsError);
+            
+            // Output the anti-noise
+            if (!SIMULATION) {
+                audioWrite(context, n, OUTPUT_CHANNEL, -filterOutput);
+            } else {
+                outputIdx = (outputIdx + 1) % IMPULSE_SIZE;
+                outputBuffer[outputIdx] = -filterOutput;
+            }
+        }
     }
+    
+    // Print filter coefficients for debugging
+    void printFilters() const {
+        rt_printf("Secondary Path:\n");
+        for (int k = 0; k < IMPULSE_SIZE; ++k) {
+            rt_printf("%f\n", secondaryPath[k]);
+        }
+        
+        rt_printf("Primary Path:\n");
+        for (int k = 0; k < IMPULSE_SIZE; ++k) {
+            rt_printf("%f\n", primaryPath[k]);
+        }
+    }
+};
 
-    currSample += blockSize;
+// Global objects
+Scope scope;
+AdaptiveNoiseCanceller* ancSystem = nullptr;
+
+bool setup(BelaContext *context, void *userData)
+{
+    // Setup scope
+    scope.setup(4, context->audioSampleRate);
+    
+    // Create ANC system
+    ancSystem = new AdaptiveNoiseCanceller(context, scope);
+    
+    return true;
 }
 
+void render(BelaContext *context, void *userData)
+{
+    // Process audio block
+    ancSystem->process(context);
+}
 
 void cleanup(BelaContext *context, void *userData)
 {
-
+    // Print final filter coefficients
+    if (ancSystem) {
+        ancSystem->printFilters();
+        delete ancSystem;
+        ancSystem = nullptr;
+    }
 }
